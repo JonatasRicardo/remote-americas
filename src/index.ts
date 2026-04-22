@@ -1,83 +1,68 @@
-import { readFile } from 'node:fs/promises';
-import { loadConfig } from './config/load-config.js';
-import { MockSearchProvider } from './search/mock-provider.js';
-import { BrowserSearchProvider } from './search/browser-provider.js';
-import { ApiSearchProvider } from './search/api-provider.js';
-import { runAllSearches } from './pipeline/run-all-searches.js';
-import { Logger } from './utils/logger.js';
-import type { SearchProvider } from './search/provider.js';
-import type { RawSearchResult } from './types/result.js';
+#!/usr/bin/env node
+import { loadConfig } from './config.js';
+import { executeSearch } from './search.js';
+import { writeOutputs } from './output.js';
+import type { CliOptions, SearchRun } from './types.js';
 
-interface CliOptions {
-  config: string;
-  debug: boolean;
-  dryRun: boolean;
-  provider: 'mock' | 'browser' | 'api';
-  fixturesPath: string;
-}
-
-const parseArgs = (argv: string[]): CliOptions => {
+const parseArgs = (): CliOptions => {
+  const args = process.argv.slice(2);
   const options: CliOptions = {
-    config: './searches.json',
-    debug: false,
+    configPath: './searches.json',
     dryRun: false,
+    debug: false,
     provider: 'api',
     fixturesPath: './tests/fixtures/mock-results.json'
   };
 
-  for (const arg of argv) {
-    if (arg.startsWith('--config=')) options.config = arg.replace('--config=', '');
-    if (arg === '--debug') options.debug = true;
+  for (const arg of args) {
     if (arg === '--dry-run') options.dryRun = true;
-    if (arg.startsWith('--provider=')) {
-      const provider = arg.replace('--provider=', '');
-      if (provider === 'mock' || provider === 'browser' || provider === 'api') {
-        options.provider = provider;
-      }
-    }
-    if (arg.startsWith('--fixtures=')) options.fixturesPath = arg.replace('--fixtures=', '');
+    else if (arg === '--debug') options.debug = true;
+    else if (arg.startsWith('--config=')) options.configPath = arg.split('=')[1] ?? options.configPath;
+    else if (arg.startsWith('--provider=')) {
+      const p = arg.split('=')[1];
+      if (p === 'api' || p === 'mock') options.provider = p;
+    } else if (arg.startsWith('--fixtures=')) options.fixturesPath = arg.split('=')[1] ?? options.fixturesPath;
   }
 
   return options;
 };
 
-const loadMockFixtures = async (fixturesPath: string): Promise<Record<string, RawSearchResult[]>> => {
-  const content = await readFile(fixturesPath, 'utf8');
-  return JSON.parse(content) as Record<string, RawSearchResult[]>;
-};
-
-const createProvider = async (options: CliOptions): Promise<SearchProvider> => {
-  if (options.provider === 'browser') {
-    return new BrowserSearchProvider();
-  }
-
-  if (options.provider === 'api') {
-    return new ApiSearchProvider();
-  }
-
-  const fixtures = await loadMockFixtures(options.fixturesPath);
-  return new MockSearchProvider(fixtures);
-};
-
 const main = async (): Promise<void> => {
-  const options = parseArgs(process.argv.slice(2));
-  const logger = new Logger({ debug: options.debug });
+  const options = parseArgs();
+  const config = await loadConfig(options.configPath);
 
-  const config = await loadConfig(options.config);
-  const provider = await createProvider(options);
+  console.log(`[info] Running ${config.searches.length} searches with provider=${options.provider}`);
 
-  logger.info('Starting job search pipeline', {
-    config: options.config,
-    provider: provider.name,
-    dryRun: options.dryRun,
-    debug: options.debug
-  });
+  const runs: SearchRun[] = [];
 
-  const runs = await runAllSearches(config, provider, options, logger);
-  logger.info('Finished job search pipeline', { reports: runs.length });
+  for (const search of config.searches) {
+    console.log(`[info] Searching: ${search.id}`);
+    const { query, collected, duplicatesRemoved } = await executeSearch(search, options);
+    const accepted = collected.filter((r) => r.accepted).sort((a, b) => b.score - a.score).slice(0, search.maxResults);
+    const rejected = collected.filter((r) => !r.accepted);
+
+    if (options.debug) {
+      console.log(`[debug] query=${query}`);
+      console.log(`[debug] rejected=${rejected.length}`);
+      rejected.slice(0, 10).forEach((r) => console.log(`[debug] reject ${r.url} -> ${r.rejectionReason}`));
+    }
+
+    runs.push({
+      search,
+      query,
+      generatedAt: new Date().toISOString(),
+      collected: collected.length,
+      duplicatesRemoved,
+      accepted,
+      rejected
+    });
+  }
+
+  await writeOutputs(config, runs, options.dryRun);
+  console.log(options.dryRun ? '[info] Dry-run complete (no files written).' : '[info] Done. Reports generated.');
 };
 
-main().catch((error: unknown) => {
-  console.error('[ERROR] Pipeline failed', error);
+main().catch((error) => {
+  console.error('[error]', error);
   process.exitCode = 1;
 });

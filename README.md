@@ -1,144 +1,56 @@
-# Job Search Report Automation
+# Job Search Reporter (Simple Architecture)
 
-A cloud-first, config-driven Node.js + TypeScript project that generates job-search reports from a single JSON configuration file.
+Projeto Node.js + TypeScript para gerar relatórios de vagas a partir de `searches.json`.
 
-## Why this project exists
+> Arquitetura simplificada (inspirada no estilo do gist): poucas camadas, poucos arquivos, fluxo direto.
 
-Searching for remote jobs across many sources is repetitive and noisy. This project creates deterministic, reviewable reports so teams and AI agents can track results over time with clean diffs.
+## Estrutura (simples)
 
-## Features
+```txt
+src/
+  index.ts      # CLI e orquestração principal
+  config.ts     # carrega/valida JSON
+  search.ts     # monta query + busca (api/mock) + filtra/score
+  output.ts     # gera markdown/json/index e grava sem reescrever igual
+  types.ts      # tipos centrais
+```
 
-- JSON config is the **single source of truth**.
-- Multiple reports generated from one config file.
-- Pluggable search providers (`mock`, `browser`, `api`).
-- Deterministic query builder and filtering pipeline.
-- URL canonicalization + deduplication.
-- Explainable scoring and rejection reasons.
-- Markdown + JSON output per search.
-- Auto-generated report index (`reports/README.md`).
-- Change-aware file writing (avoid CI noise).
-- Dry-run and debug modes for safe cloud execution.
-- Ready for GitHub Actions and future UI/screenshot workflows.
-
-## Setup
+## Como roda
 
 ```bash
 npm install
-npm run build
+npm run search
 ```
 
-## Config format
-
-Default config file: `./searches.json`  
-Schema file: `./searches.schema.json`
-
-Each search includes:
-
-- `id`
-- `title`
-- `filename`
-- `sites`
-- `include`
-- `exclude`
-- `allOf`
-- `anyOf`
-- `noneOf`
-- `maxResults`
-
-## Run searches
+### Modos úteis
 
 ```bash
-npm run search
+npm run search -- --dry-run
+npm run search -- --debug
+npm run search -- --provider=mock
 npm run search -- --config=./searches.json
-npm run search -- --provider=api --debug
-npm run search:dry
 ```
 
-### Runtime modes
+## Busca real
 
-- **Normal mode**: executes provider, filters, and writes outputs.
-- **Debug mode (`--debug`)**: emits intermediate reasoning and rejection detail.
-- **Dry-run mode (`--dry-run`)**: plans execution but does not write files.
+Por padrão usa provider `api` e faz busca web real no DuckDuckGo Lite.
 
-## Generated outputs
-
-- Markdown reports: `reports/*.md`
-- JSON datasets: `reports/json/*.json`
-- Main index: `reports/README.md`
-
-## Provider architecture
-
-Main pipeline depends only on `SearchProvider` interface:
-
-- `ApiSearchProvider` (default, performs real web search via DuckDuckGo Lite HTML endpoint)
-- `BrowserSearchProvider` (currently delegates to API provider; reserved for full Playwright crawling)
-- `MockSearchProvider` (deterministic fixtures for tests/cloud runs)
-
-
-## Real search behavior
-
-By default, the CLI now uses `--provider=api`, which performs real network search requests.
-
-Optional environment override:
-
-- `SEARCH_ENGINE_URL` (default: `https://lite.duckduckgo.com/lite/`)
-
-Examples:
+- Variável opcional: `SEARCH_ENGINE_URL`
+- Exemplo:
 
 ```bash
-npm run search
-npm run search -- --provider=api --config=./searches.json
 SEARCH_ENGINE_URL=https://lite.duckduckgo.com/lite/ npm run search
 ```
 
-## Add or modify searches
+## Saídas
 
-1. Update `searches.json`.
-2. Validate with `npm run test`.
-3. Execute `npm run search`.
-4. Commit only changed report artifacts.
+- `reports/*.md`
+- `reports/json/*.json`
+- `reports/README.md`
 
-## Future UI plan
+## Princípios
 
-`/apps/web` is reserved for a future UI that can:
-
-- list report index entries
-- open individual report views
-- filter by tags/domain/location/search type
-- render visual previews backed by generated JSON
-
-## Future screenshot validation plan
-
-Placeholder scripts are wired now:
-
-- `npm run preview` serves `reports/`
-- `npm run screenshot` runs Playwright and captures images under `artifacts/screenshots`
-
-This enables future screenshot regression checks with minimal changes.
-
-## GitHub Actions readiness
-
-The architecture is workflow-ready for scheduled runs:
-
-1. checkout
-2. install dependencies
-3. run search pipeline
-4. run tests/lint
-5. commit only changed report files
-6. upload artifacts (reports/screenshots) if needed
-
-## Scripts
-
-- `npm run build`
-- `npm run dev`
-- `npm run search`
-- `npm run search:dry`
-- `npm run test`
-- `npm run lint`
-- `npm run format`
-- `npm run preview`
-- `npm run screenshot`
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for project structure, coding rules, testing guidance, and extension patterns.
+- Config (`searches.json`) é a fonte da verdade.
+- Código explícito e fácil de seguir.
+- Dry-run e debug para rodar em cloud tasks.
+- Escrita com diff-awareness (não reescreve arquivo sem mudança).
