@@ -1,8 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { CliOptions, SearchConfig, SearchResult } from './types.js';
 
-const engineUrl = process.env.SEARCH_ENGINE_URL ?? 'https://lite.duckduckgo.com/lite/';
-
 const quote = (value: string): string => `"${value}"`;
 const text = (result: Pick<SearchResult, 'title' | 'snippet'>): string =>
   `${result.title} ${result.snippet}`.toLowerCase();
@@ -18,45 +16,78 @@ export const buildQuery = (search: SearchConfig): string => {
   return parts.join(' ');
 };
 
-const parseHtmlResults = (html: string): Array<{ title: string; url: string; snippet: string }> => {
-  const linkRegex = /<a[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/gi;
-  const items: Array<{ title: string; url: string; snippet: string }> = [];
-  const seen = new Set<string>();
+interface GoogleSearchItem {
+  title?: string;
+  link?: string;
+  snippet?: string;
+}
 
-  let match: RegExpExecArray | null;
-  while ((match = linkRegex.exec(html)) !== null) {
-    const [full, hrefRaw, titleRaw] = match;
-    const href = hrefRaw.replace(/&amp;/g, '&');
-    if (!href.startsWith('http') || seen.has(href)) continue;
-    seen.add(href);
+interface GoogleSearchResponse {
+  items?: GoogleSearchItem[];
+}
 
-    const title = titleRaw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-    const snippet = html
-      .slice(match.index + full.length, match.index + full.length + 350)
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+const parseGoogleResponse = (payload: GoogleSearchResponse): Array<{ title: string; url: string; snippet: string }> => {
+  const items = payload.items ?? [];
+  return items
+    .map((item) => ({
+      title: (item.title ?? '').trim(),
+      url: (item.link ?? '').trim(),
+      snippet: (item.snippet ?? '').trim()
+    }))
+    .filter((item) => item.url.startsWith('http'));
+};
 
-    items.push({ title: title || href, url: href, snippet });
+const searchGoogle = async (
+  query: string,
+  maxResults: number
+): Promise<Array<{ title: string; url: string; snippet: string }>> => {
+  const apiKey = process.env.GOOGLE_API_KEY;
+  const cx = process.env.GOOGLE_CSE_ID;
+
+  if (!apiKey || !cx) {
+    throw new Error(
+      'Missing GOOGLE_API_KEY or GOOGLE_CSE_ID. Configure Google Custom Search JSON API credentials.'
+    );
   }
 
-  return items;
+  const collected: Array<{ title: string; url: string; snippet: string }> = [];
+
+  for (let start = 1; start <= maxResults && start <= 91; start += 10) {
+    const url = new URL('https://www.googleapis.com/customsearch/v1');
+    url.searchParams.set('key', apiKey);
+    url.searchParams.set('cx', cx);
+    url.searchParams.set('q', query);
+    url.searchParams.set('start', String(start));
+    url.searchParams.set('num', String(Math.min(10, maxResults - collected.length)));
+
+    const response = await fetch(url, {
+      headers: {
+        'user-agent': 'job-search-reporter/1.0'
+      }
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Google API error: ${response.status} ${response.statusText} - ${body}`);
+    }
+
+    const payload = (await response.json()) as GoogleSearchResponse;
+    const batch = parseGoogleResponse(payload);
+
+    if (batch.length === 0) break;
+
+    collected.push(...batch);
+
+    if (collected.length >= maxResults) break;
+  }
+
+  return collected.slice(0, maxResults);
 };
 
-const searchWeb = async (query: string, maxResults: number): Promise<Array<{ title: string; url: string; snippet: string }>> => {
-  const url = new URL(engineUrl);
-  url.searchParams.set('q', query);
-
-  const response = await fetch(url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; JobSearchReporter/1.0)' }
-  });
-  if (!response.ok) throw new Error(`Search engine error: ${response.status} ${response.statusText}`);
-
-  const html = await response.text();
-  return parseHtmlResults(html).slice(0, maxResults);
-};
-
-const loadMock = async (fixturesPath: string, searchId: string): Promise<Array<{ title: string; url: string; snippet: string }>> => {
+const loadMock = async (
+  fixturesPath: string,
+  searchId: string
+): Promise<Array<{ title: string; url: string; snippet: string }>> => {
   const content = await readFile(fixturesPath, 'utf8');
   const data = JSON.parse(content) as Record<string, Array<{ title: string; url: string; snippet: string }>>;
   return data[searchId] ?? [];
@@ -85,7 +116,7 @@ export const executeSearch = async (
   const raw =
     options.provider === 'mock'
       ? await loadMock(options.fixturesPath, search.id)
-      : await searchWeb(query, search.maxResults * 2);
+      : await searchGoogle(query, search.maxResults * 2);
 
   const seen = new Set<string>();
   let duplicatesRemoved = 0;
@@ -99,7 +130,9 @@ export const executeSearch = async (
       snippet: item.snippet,
       sourceDomain,
       matchedIncludeTerms: search.include.filter((t) => text(item).includes(t.toLowerCase())),
-      matchedExcludeTerms: [...search.exclude, ...search.noneOf].filter((t) => text(item).includes(t.toLowerCase())),
+      matchedExcludeTerms: [...search.exclude, ...search.noneOf].filter((t) =>
+        text(item).includes(t.toLowerCase())
+      ),
       score: 0,
       accepted: false
     };
@@ -133,3 +166,5 @@ export const executeSearch = async (
 
   return { query, collected, duplicatesRemoved };
 };
+
+export { parseGoogleResponse };

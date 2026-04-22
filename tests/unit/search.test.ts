@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildQuery, executeSearch } from '../../src/search.js';
+import { buildQuery, executeSearch, parseGoogleResponse } from '../../src/search.js';
 import config from '../../searches.json' with { type: 'json' };
 
 describe('search helpers', () => {
@@ -18,5 +18,17 @@ describe('search helpers', () => {
     });
 
     expect(result.collected.length).toBeGreaterThan(0);
+  });
+
+  it('parses google payload', () => {
+    const parsed = parseGoogleResponse({
+      items: [
+        { title: 'A', link: 'https://example.com/a', snippet: 'One' },
+        { title: 'B', link: '/internal', snippet: 'Two' }
+      ]
+    });
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].url).toBe('https://example.com/a');
   });
 });

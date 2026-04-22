@@ -10,7 +10,7 @@ Projeto Node.js + TypeScript para gerar relatórios de vagas a partir de `search
 src/
   index.ts      # CLI e orquestração principal
   config.ts     # carrega/valida JSON
-  search.ts     # monta query + busca (api/mock) + filtra/score
+  search.ts     # monta query + busca (Google API/mock) + filtra/score
   output.ts     # gera markdown/json/index e grava sem reescrever igual
   types.ts      # tipos centrais
 ```
@@ -31,16 +31,19 @@ npm run search -- --provider=mock
 npm run search -- --config=./searches.json
 ```
 
-## Busca real
+## Busca real (Google API)
 
-Por padrão usa provider `api` e faz busca web real no DuckDuckGo Lite.
+A busca real usa **Google Custom Search JSON API** (sem scraping, sem captcha de bot).
 
-- Variável opcional: `SEARCH_ENGINE_URL`
-- Exemplo:
+Defina as variáveis antes de rodar:
 
 ```bash
-SEARCH_ENGINE_URL=https://lite.duckduckgo.com/lite/ npm run search
+export GOOGLE_API_KEY="sua-chave"
+export GOOGLE_CSE_ID="seu-search-engine-id"
+npm run search
 ```
+
+Se não definir essas variáveis, o script falha com erro explicando o que falta.
 
 ## Saídas
 
