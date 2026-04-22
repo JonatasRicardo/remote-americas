@@ -1,0 +1,33 @@
+{
+  "output": {
+    "reportsDir": "./reports",
+    "indexFile": "./reports/README.md",
+    "jsonDir": "./reports/json"
+  },
+  "searches": [
+    {
+      "id": "frontend-remote-br",
+      "title": "Front-end remoto Brasil",
+      "filename": "frontend-remote-br.md",
+      "sites": ["greenhouse.io", "lever.co", "ashbyhq.com"],
+      "include": ["frontend", "front-end", "react", "typescript"],
+      "exclude": ["wordpress", "intern", "internship", "php"],
+      "allOf": ["remote", "brazil"],
+      "anyOf": ["frontend engineer", "frontend developer", "software engineer"],
+      "noneOf": ["ios", "android", "designer"],
+      "maxResults": 50
+    },
+    {
+      "id": "backend-remote-us",
+      "title": "Back-end remoto EUA",
+      "filename": "backend-remote-us.md",
+      "sites": ["greenhouse.io", "lever.co", "ashbyhq.com", "workday.com"],
+      "include": ["backend", "node.js", "typescript"],
+      "exclude": ["wordpress", "junior", "internship"],
+      "allOf": ["remote", "united states"],
+      "anyOf": ["backend engineer", "software engineer"],
+      "noneOf": ["designer", "mobile"],
+      "maxResults": 50
+    }
+  ]
+}
