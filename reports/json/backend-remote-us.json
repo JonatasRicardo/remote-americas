@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "id": "backend-remote-us",
+    "title": "Back-end remoto EUA",
+    "filename": "backend-remote-us.md",
+    "generatedAt": "2026-04-22T18:24:18.078Z"
+  },
+  "query": "(site:jobs.ashbyhq.com) \"remote\" \"united states\" (\"backend\" OR \"node.js\" OR \"typescript\") (\"backend engineer\" OR \"software engineer\") -\"wordpress\" -\"junior\" -\"internship\" -\"designer\" -\"mobile\"",
+  "stats": {
+    "totalCollected": 2,
+    "duplicatesRemoved": 0,
+    "totalAfterFiltering": 1
+  },
+  "acceptedResults": [
+    {
+      "title": "Backend Engineer - Remote United States",
+      "url": "https://jobs.lever.co/foobar/456",
+      "canonicalUrl": "https://jobs.lever.co/foobar/456",
+      "snippet": "Node.js TypeScript distributed systems role in the United States",
+      "sourceDomain": "jobs.lever.co",
+      "matchedIncludeTerms": [
+        "backend",
+        "node.js",
+        "typescript"
+      ],
+      "matchedExcludeTerms": [],
+      "score": 100,
+      "accepted": true
+    }
+  ]
+}

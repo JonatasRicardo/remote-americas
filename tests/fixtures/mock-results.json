@@ -1,0 +1,31 @@
+{
+  "frontend-remote-br": [
+    {
+      "title": "Senior Frontend Engineer - Remote Brazil",
+      "url": "https://boards.greenhouse.io/acme/jobs/123",
+      "snippet": "React and TypeScript role for remote professionals in Brazil"
+    },
+    {
+      "title": "Frontend Developer",
+      "url": "https://boards.greenhouse.io/acme/jobs/123?ref=abc",
+      "snippet": "Duplicate URL variation"
+    },
+    {
+      "title": "WordPress Frontend Internship",
+      "url": "https://jobs.example.com/wordpress-intern",
+      "snippet": "Internship role focused on WordPress"
+    }
+  ],
+  "backend-remote-us": [
+    {
+      "title": "Backend Engineer - Remote United States",
+      "url": "https://jobs.lever.co/foobar/456",
+      "snippet": "Node.js TypeScript distributed systems role in the United States"
+    },
+    {
+      "title": "Backend Engineer - Mobile",
+      "url": "https://jobs.lever.co/foobar/789",
+      "snippet": "Remote backend role with mobile platform responsibilities"
+    }
+  ]
+}
