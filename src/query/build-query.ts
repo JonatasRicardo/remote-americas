@@ -8,7 +8,7 @@ const buildOrGroup = (items: string[]): string => {
     return '';
   }
   if (items.length === 1) {
-    return quote(items[0]);
+    return quote(items[0]!);
   }
   return `(${items.map(quote).join(' OR ')})`;
 };

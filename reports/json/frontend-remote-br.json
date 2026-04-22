@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "id": "frontend-remote-br",
+    "title": "Front-end remoto Brasil",
+    "filename": "frontend-remote-br.md",
+    "generatedAt": "2026-04-22T18:24:18.077Z"
+  },
+  "query": "(site:jobs.ashbyhq.com) \"remote\" \"brazil\" (\"frontend\" OR \"front-end\" OR \"react\" OR \"typescript\") (\"frontend engineer\" OR \"frontend developer\" OR \"software engineer\") -\"wordpress\" -\"intern\" -\"internship\" -\"php\" -\"ios\" -\"android\" -\"designer\"",
+  "stats": {
+    "totalCollected": 3,
+    "duplicatesRemoved": 1,
+    "totalAfterFiltering": 1
+  },
+  "acceptedResults": [
+    {
+      "title": "Senior Frontend Engineer - Remote Brazil",
+      "url": "https://boards.greenhouse.io/acme/jobs/123",
+      "canonicalUrl": "https://boards.greenhouse.io/acme/jobs/123",
+      "snippet": "React and TypeScript role for remote professionals in Brazil",
+      "sourceDomain": "boards.greenhouse.io",
+      "matchedIncludeTerms": [
+        "frontend",
+        "react",
+        "typescript"
+      ],
+      "matchedExcludeTerms": [],
+      "score": 100,
+      "accepted": true
+    }
+  ]
+}
