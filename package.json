@@ -1,0 +1,46 @@
+{
+  "name": "job-search-report-automation",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Config-driven job search report generator for cloud-first environments",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts --config=./searches.json --provider=api --debug",
+    "search": "tsx src/index.ts",
+    "search:dry": "tsx src/index.ts --dry-run",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "preview": "node scripts/preview.mjs",
+    "screenshot": "playwright test"
+  },
+  "keywords": [
+    "job-search",
+    "typescript",
+    "automation",
+    "reports"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "@types/node": "^22.15.3",
+    "@typescript-eslint/eslint-plugin": "^8.31.0",
+    "@typescript-eslint/parser": "^8.31.0",
+    "eslint": "^9.25.1",
+    "eslint-config-prettier": "^10.1.2",
+    "prettier": "^3.5.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.3"
+  }
+}
