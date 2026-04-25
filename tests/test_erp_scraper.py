@@ -1,0 +1,209 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+from urllib.parse import parse_qs, urlparse
+
+import erp_scraper
+
+
+class ValidateSearchTermsTests(unittest.TestCase):
+    def test_validate_accepts_valid_list(self):
+        raw = [
+            {
+                "title": "Frontend Remote",
+                "queries": [
+                    "site:greenhouse.com \"frontend\" \"remote\"",
+                    "site:linkedin.com/jobs \"frontend\" \"remote\"",
+                ],
+                "output": "frontend-remote",
+            }
+        ]
+
+        terms = erp_scraper.validate_search_terms(raw)
+
+        self.assertEqual(1, len(terms))
+        self.assertEqual("frontend-remote", terms[0].output)
+        self.assertEqual(2, len(terms[0].queries))
+
+    def test_validate_rejects_missing_queries_field(self):
+        raw = [{"title": "Frontend", "output": "frontend-remote"}]
+
+        with self.assertRaises(ValueError) as ctx:
+            erp_scraper.validate_search_terms(raw)
+
+        self.assertIn("missing required field 'queries'", str(ctx.exception))
+
+    def test_validate_rejects_empty_queries_array(self):
+        raw = [{"title": "Frontend", "queries": [], "output": "frontend-remote"}]
+
+        with self.assertRaises(ValueError) as ctx:
+            erp_scraper.validate_search_terms(raw)
+
+        self.assertIn("non-empty array", str(ctx.exception))
+
+    def test_validate_rejects_invalid_slug(self):
+        raw = [
+            {
+                "title": "Frontend",
+                "queries": ["site:greenhouse.com \"frontend\" \"remote\""],
+                "output": "Frontend Remote",
+            }
+        ]
+
+        with self.assertRaises(ValueError) as ctx:
+            erp_scraper.validate_search_terms(raw)
+
+        self.assertIn("invalid output", str(ctx.exception))
+
+
+class PaginationUrlTests(unittest.TestCase):
+    def test_build_url_first_page_has_no_offset(self):
+        url = erp_scraper.build_ddh_url("site:https://greenhouse.com remote", page=1, results_per_page=30)
+        qs = parse_qs(urlparse(url).query)
+
+        self.assertEqual("site:greenhouse.com remote", qs["q"][0])
+        self.assertNotIn("s", qs)
+
+    def test_build_url_second_page_has_offset(self):
+        url = erp_scraper.build_ddh_url("site:linkedin.com/jobs remote", page=3, results_per_page=30)
+        qs = parse_qs(urlparse(url).query)
+
+        self.assertEqual("60", qs["s"][0])
+
+
+class QueryPaginationBehaviorTests(unittest.TestCase):
+    def test_empty_page_skips_to_next_query(self):
+        cfg = erp_scraper.Config(min_delay=0, max_delay=0, max_retries=1, timeout=1)
+        queries = ["query-one", "query-two"]
+
+        def fake_parse(html: str):
+            if html == "query-one|1":
+                return [
+                    {
+                        "position": 1,
+                        "title": "One",
+                        "url": "https://example.com/one",
+                        "snippet": "snippet one",
+                        "domain": "example.com",
+                    }
+                ]
+            if html == "query-one|2":
+                return []
+            if html == "query-two|1":
+                return [
+                    {
+                        "position": 1,
+                        "title": "Two",
+                        "url": "https://example.com/two",
+                        "snippet": "snippet two",
+                        "domain": "example.com",
+                    }
+                ]
+            if html == "query-two|2":
+                return []
+            raise AssertionError(f"Unexpected html marker: {html}")
+
+        with mock.patch(
+            "erp_scraper.fetch_ddg_html",
+            side_effect=lambda query, cfg, page, results_per_page: f"{query}|{page}",
+        ) as fetch_mock, mock.patch(
+            "erp_scraper.parse_ddg_results",
+            side_effect=fake_parse,
+        ), mock.patch(
+            "erp_scraper.sleep_between_requests",
+            return_value=None,
+        ):
+            rows, errors = erp_scraper.collect_results_for_queries(
+                queries=queries,
+                cfg=cfg,
+                pages=3,
+                results_per_page=30,
+            )
+
+        self.assertEqual([], errors)
+        self.assertEqual(2, len(rows))
+
+        self.assertEqual("query-one", rows[0]["query"])
+        self.assertEqual(1, rows[0]["query_index"])
+        self.assertEqual(1, rows[0]["page"])
+        self.assertEqual(1, rows[0]["position"])
+
+        self.assertEqual("query-two", rows[1]["query"])
+        self.assertEqual(2, rows[1]["query_index"])
+        self.assertEqual(1, rows[1]["page"])
+        self.assertEqual(2, rows[1]["position"])
+
+        expected_calls = [
+            mock.call(query="query-one", cfg=cfg, page=1, results_per_page=30),
+            mock.call(query="query-one", cfg=cfg, page=2, results_per_page=30),
+            mock.call(query="query-two", cfg=cfg, page=1, results_per_page=30),
+            mock.call(query="query-two", cfg=cfg, page=2, results_per_page=30),
+        ]
+        self.assertEqual(expected_calls, fetch_mock.call_args_list)
+
+
+class PathAndParserTests(unittest.TestCase):
+    def test_resolve_output_path_uses_slug_json(self):
+        path = erp_scraper.resolve_output_path("frontend-remote", Path("data/results"))
+
+        self.assertEqual(Path("data/results/frontend-remote.json"), path)
+
+    def test_parse_ddg_results_extracts_snippet_and_domain(self):
+        html = """
+        <html>
+          <body>
+            <a class=\"result__a\" href=\"https://example.com/jobs/123\">Senior <b>Frontend</b> Engineer</a>
+            <a class=\"result__snippet\">Remote role with React and TypeScript</a>
+
+            <a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.greenhouse.io%2Fjobs%2F456&rut=abc\">Greenhouse listing</a>
+            <div class=\"result__snippet\">Apply now for remote team</div>
+          </body>
+        </html>
+        """
+
+        rows = erp_scraper.parse_ddg_results(html)
+
+        self.assertEqual(2, len(rows))
+
+        first = rows[0]
+        self.assertEqual(1, first["position"])
+        self.assertEqual("Senior Frontend Engineer", first["title"])
+        self.assertEqual("https://example.com/jobs/123", first["url"])
+        self.assertEqual("example.com", first["domain"])
+        self.assertEqual("Remote role with React and TypeScript", first["snippet"])
+
+        second = rows[1]
+        self.assertEqual(2, second["position"])
+        self.assertEqual("https://www.greenhouse.io/jobs/456", second["url"])
+        self.assertEqual("greenhouse.io", second["domain"])
+        self.assertEqual("Apply now for remote team", second["snippet"])
+
+
+class LoadSearchTermsTests(unittest.TestCase):
+    def test_load_search_terms_from_file(self):
+        payload = [
+            {
+                "title": "Backend Python Remote",
+                "queries": [
+                    "site:jobs.lever.co \"python\" \"remote\"",
+                    "site:dice.com \"python\" \"remote\"",
+                ],
+                "output": "backend-python-remote",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "search_terms.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            terms = erp_scraper.load_search_terms(path)
+
+        self.assertEqual(1, len(terms))
+        self.assertEqual("backend-python-remote", terms[0].output)
+        self.assertEqual(2, len(terms[0].queries))
+
+
+if __name__ == "__main__":
+    unittest.main()

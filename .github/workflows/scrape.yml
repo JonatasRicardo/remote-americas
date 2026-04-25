@@ -1,0 +1,65 @@
+name: Scrape Search Results
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run scraper in batch mode
+        run: |
+          python erp_scraper.py --config data/queries/search_terms.json --results-dir data/results
+
+      - name: Check result changes
+        id: changes
+        shell: bash
+        run: |
+          if [[ -n "$(git status --porcelain -- data/results)" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build run metadata
+        id: meta
+        if: steps.changes.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          echo "timestamp=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request with updated results
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(scraper): update search results"
+          title: "chore(scraper): update search results (${{ steps.meta.outputs.date }})"
+          body: |
+            Automated scraper execution updated `data/results/*.json`.
+
+            - Run timestamp: `${{ steps.meta.outputs.timestamp }}`
+            - Workflow: `${{ github.workflow }}`
+            - Trigger: `${{ github.event_name }}`
+
+            Please review the updated search results.
+          branch: auto/scrape
+          branch-suffix: timestamp
+          delete-branch: true
+          add-paths: |
+            data/results/*.json
