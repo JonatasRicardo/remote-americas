@@ -7,10 +7,11 @@ import random
 import re
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from html import unescape
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -47,6 +48,109 @@ OUTPUT_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 class CaptchaDetected(Exception):
     pass
+
+
+class PlaywrightFetcher:
+    """
+    Lazy Playwright-backed fetcher that reuses one browser context.
+    """
+
+    def __init__(self, headed: bool = False):
+        self.headed = headed
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._timeout_error_cls = None
+
+    def _ensure_started(self) -> None:
+        if self._context is not None:
+            return
+
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise ValueError(
+                "Playwright engine selected, but dependency is missing. "
+                "Install with: pip install playwright && python -m playwright install chromium"
+            ) from exc
+
+        self._timeout_error_cls = PlaywrightTimeoutError
+        self._playwright = sync_playwright().start()
+        self._browser = self._playwright.chromium.launch(headless=not self.headed)
+        self._context = self._browser.new_context(
+            java_script_enabled=True,
+            locale="en-US",
+            user_agent=random.choice(UA_LIST),
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+
+    def fetch_ddg_html(self, query: str, cfg: "Config", page: int, results_per_page: int) -> str:
+        self._ensure_started()
+        assert self._context is not None
+        assert self._timeout_error_cls is not None
+
+        url = build_ddh_url(query=query, page=page, results_per_page=results_per_page)
+
+        for attempt in range(cfg.max_retries):
+            page_obj = self._context.new_page()
+            try:
+                page_obj.set_default_timeout(cfg.timeout * 1000)
+                page_obj.goto(url, wait_until="domcontentloaded")
+                html = page_obj.content()
+
+                if looks_like_captcha(html):
+                    raise CaptchaDetected("CAPTCHA detected. Stopping to avoid anti-bot policy violations.")
+
+                return html
+
+            except self._timeout_error_cls:
+                if attempt < cfg.max_retries - 1:
+                    wait = (cfg.backoff_base ** attempt) + random.uniform(0.3, 1.2)
+                    time.sleep(wait)
+                    continue
+                raise
+            except Exception:
+                if attempt < cfg.max_retries - 1:
+                    wait = (cfg.backoff_base ** attempt) + random.uniform(0.3, 1.2)
+                    time.sleep(wait)
+                    continue
+                raise
+            finally:
+                page_obj.close()
+
+        raise RuntimeError("Failed to fetch HTML with Playwright after retries.")
+
+    def close(self) -> None:
+        if self._context is not None:
+            self._context.close()
+            self._context = None
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+        if self._playwright is not None:
+            self._playwright.stop()
+            self._playwright = None
+
+
+FetchHtmlFn = Callable[[str, "Config", int, int], str]
+
+
+@contextmanager
+def resolve_fetcher(engine: str, headed: bool = False) -> Iterator[FetchHtmlFn]:
+    if engine == "http":
+        yield fetch_ddg_html
+        return
+
+    if engine == "playwright":
+        fetcher = PlaywrightFetcher(headed=headed)
+        try:
+            yield fetcher.fetch_ddg_html
+        finally:
+            fetcher.close()
+        return
+
+    raise ValueError(f"Unknown engine '{engine}'. Use 'http' or 'playwright'.")
 
 
 def looks_like_captcha(html: str) -> bool:
@@ -270,7 +374,11 @@ def collect_results_for_queries(
     cfg: Config,
     pages: int,
     results_per_page: int,
+    fetch_html: Optional[FetchHtmlFn] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    if fetch_html is None:
+        fetch_html = fetch_ddg_html
+
     rows: List[Dict[str, Any]] = []
     errors: List[str] = []
     global_position = 1
@@ -281,7 +389,7 @@ def collect_results_for_queries(
             should_sleep = not (query_index == len(queries) and page == pages)
 
             try:
-                html = fetch_ddg_html(query=query, cfg=cfg, page=page, results_per_page=results_per_page)
+                html = fetch_html(query=query, cfg=cfg, page=page, results_per_page=results_per_page)
                 page_rows = parse_ddg_results(html)
 
                 if not page_rows:
@@ -315,13 +423,17 @@ def run_single_query(
     cfg: Config,
     pages: int,
     results_per_page: int,
+    engine: str = "http",
+    headed: bool = False,
 ) -> int:
-    rows, errors = collect_results_for_queries(
-        queries=[query],
-        cfg=cfg,
-        pages=pages,
-        results_per_page=results_per_page,
-    )
+    with resolve_fetcher(engine=engine, headed=headed) as fetch_html:
+        rows, errors = collect_results_for_queries(
+            queries=[query],
+            cfg=cfg,
+            pages=pages,
+            results_per_page=results_per_page,
+            fetch_html=fetch_html,
+        )
     save_json(rows, output_path)
 
     print(f"[OK] Results: {len(rows)}")
@@ -339,6 +451,8 @@ def run_batch(
     cfg: Config,
     pages: int,
     results_per_page: int,
+    engine: str = "http",
+    headed: bool = False,
 ) -> int:
     terms = load_search_terms(config_path)
     print(f"[INFO] Loaded search terms: {len(terms)}")
@@ -348,34 +462,36 @@ def run_batch(
     page_error_count = 0
     failure_messages: List[str] = []
 
-    for term in terms:
-        output_path = resolve_output_path(term.output, results_dir)
-        print(f"\n[RUN] {term.title} -> {output_path}")
-        print(f"[INFO] Queries: {len(term.queries)} | Pages per query: {pages}")
+    with resolve_fetcher(engine=engine, headed=headed) as fetch_html:
+        for term in terms:
+            output_path = resolve_output_path(term.output, results_dir)
+            print(f"\n[RUN] {term.title} -> {output_path}")
+            print(f"[INFO] Queries: {len(term.queries)} | Pages per query: {pages}")
 
-        try:
-            rows, page_errors = collect_results_for_queries(
-                queries=term.queries,
-                cfg=cfg,
-                pages=pages,
-                results_per_page=results_per_page,
-            )
-            save_json(rows, output_path)
+            try:
+                rows, page_errors = collect_results_for_queries(
+                    queries=term.queries,
+                    cfg=cfg,
+                    pages=pages,
+                    results_per_page=results_per_page,
+                    fetch_html=fetch_html,
+                )
+                save_json(rows, output_path)
 
-            page_error_count += len(page_errors)
-            success_count += 1
+                page_error_count += len(page_errors)
+                success_count += 1
 
-            print(f"[OK] Saved {len(rows)} rows to {output_path}")
-            if page_errors:
-                print(f"[WARN] {len(page_errors)} page(s) failed while processing '{term.title}'.")
-                for page_error in page_errors:
-                    print(f" - {page_error}")
+                print(f"[OK] Saved {len(rows)} rows to {output_path}")
+                if page_errors:
+                    print(f"[WARN] {len(page_errors)} page(s) failed while processing '{term.title}'.")
+                    for page_error in page_errors:
+                        print(f" - {page_error}")
 
-        except Exception as exc:  # noqa: BLE001
-            failed_count += 1
-            message = f"{term.output}: {type(exc).__name__}: {exc}"
-            failure_messages.append(message)
-            print(f"[WARN] Search term failed for '{term.title}': {type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                message = f"{term.output}: {type(exc).__name__}: {exc}"
+                failure_messages.append(message)
+                print(f"[WARN] Search term failed for '{term.title}': {type(exc).__name__}: {exc}")
 
     print("\n[SUMMARY]")
     print(f"[SUMMARY] Search terms succeeded: {success_count}")
@@ -409,6 +525,17 @@ def main() -> int:
     parser.add_argument("--max-delay", type=float, default=6.0)
     parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=20)
+    parser.add_argument(
+        "--engine",
+        choices=("http", "playwright"),
+        default="http",
+        help="Fetcher engine: 'http' (default) or 'playwright' for real Chromium browser with JavaScript.",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Open visible Chromium window (only used with --engine playwright).",
+    )
 
     args = parser.parse_args()
 
@@ -420,6 +547,9 @@ def main() -> int:
 
     if args.results_per_page < 1:
         parser.error("--results-per-page must be >= 1.")
+
+    if args.headed and args.engine != "playwright":
+        print("[WARN] --headed has no effect unless --engine playwright.")
 
     if not args.query and not args.config:
         args.config = str(DEFAULT_CONFIG_PATH)
@@ -440,6 +570,8 @@ def main() -> int:
                 cfg=cfg,
                 pages=args.pages,
                 results_per_page=args.results_per_page,
+                engine=args.engine,
+                headed=args.headed,
             )
             return 0
 
@@ -451,6 +583,8 @@ def main() -> int:
             cfg=cfg,
             pages=args.pages,
             results_per_page=args.results_per_page,
+            engine=args.engine,
+            headed=args.headed,
         )
     except CaptchaDetected as exc:
         print(f"[STOP] {exc}")

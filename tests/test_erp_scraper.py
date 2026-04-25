@@ -144,6 +144,29 @@ class QueryPaginationBehaviorTests(unittest.TestCase):
         self.assertEqual(expected_calls, fetch_mock.call_args_list)
 
 
+class FetcherSelectionTests(unittest.TestCase):
+    def test_resolve_fetcher_http_returns_default_fetch_function(self):
+        with erp_scraper.resolve_fetcher(engine="http", headed=False) as fetch_html:
+            self.assertIs(fetch_html, erp_scraper.fetch_ddg_html)
+
+    def test_resolve_fetcher_playwright_uses_fetcher_and_closes(self):
+        with mock.patch("erp_scraper.PlaywrightFetcher") as fetcher_cls:
+            fetcher_instance = fetcher_cls.return_value
+
+            with erp_scraper.resolve_fetcher(engine="playwright", headed=True) as fetch_html:
+                self.assertIs(fetch_html, fetcher_instance.fetch_ddg_html)
+
+            fetcher_cls.assert_called_once_with(headed=True)
+            fetcher_instance.close.assert_called_once()
+
+    def test_resolve_fetcher_invalid_engine_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            with erp_scraper.resolve_fetcher(engine="invalid", headed=False):
+                pass
+
+        self.assertIn("Unknown engine", str(ctx.exception))
+
+
 class PathAndParserTests(unittest.TestCase):
     def test_resolve_output_path_uses_slug_json(self):
         path = erp_scraper.resolve_output_path("frontend-remote", Path("data/results"))

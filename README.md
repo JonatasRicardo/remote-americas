@@ -64,6 +64,27 @@ Run the scraper manually in batch mode:
 python3 erp_scraper.py --config data/queries/search_terms.json --results-dir data/results
 ```
 
+By default, the scraper uses a lightweight HTTP engine.
+
+If you need a real browser (Chromium) with JavaScript enabled, install Playwright once:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+Then run with the Playwright engine:
+
+```bash
+python3 erp_scraper.py --config data/queries/search_terms.json --results-dir data/results --engine playwright
+```
+
+To open a visible browser window while running:
+
+```bash
+python3 erp_scraper.py --config data/queries/search_terms.json --results-dir data/results --engine playwright --headed
+```
+
 Pagination defaults to 10 pages per query. You can override it:
 
 ```bash
@@ -78,6 +99,8 @@ Optional flags:
 - `--max-delay` (default: `6.0`)
 - `--retries` (default: `4`)
 - `--timeout` (default: `20`)
+- `--engine` (`http` or `playwright`, default: `http`)
+- `--headed` (opens visible Chromium window; only applies with `--engine playwright`)
 
 Single-query manual run is also available:
 
