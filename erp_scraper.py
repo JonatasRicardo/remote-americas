@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -50,6 +51,12 @@ class CaptchaDetected(Exception):
     pass
 
 
+def running_without_display_server() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 class PlaywrightFetcher:
     """
     Lazy Playwright-backed fetcher that reuses one browser context.
@@ -77,13 +84,27 @@ class PlaywrightFetcher:
 
         self._timeout_error_cls = PlaywrightTimeoutError
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=not self.headed)
-        self._context = self._browser.new_context(
-            java_script_enabled=True,
-            locale="en-US",
-            user_agent=random.choice(UA_LIST),
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-        )
+
+        launch_headless = not self.headed
+        if self.headed and running_without_display_server():
+            print("[WARN] --headed requested, but no display server was found. Falling back to headless mode.")
+            launch_headless = True
+
+        try:
+            self._browser = self._playwright.chromium.launch(headless=launch_headless)
+            self._context = self._browser.new_context(
+                java_script_enabled=True,
+                locale="en-US",
+                user_agent=random.choice(UA_LIST),
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+            )
+        except Exception:
+            # Ensure partially started Playwright state is fully stopped before retrying.
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
 
     def fetch_ddg_html(self, query: str, cfg: "Config", page: int, results_per_page: int) -> str:
         self._ensure_started()

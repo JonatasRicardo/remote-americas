@@ -1,5 +1,7 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -165,6 +167,60 @@ class FetcherSelectionTests(unittest.TestCase):
                 pass
 
         self.assertIn("Unknown engine", str(ctx.exception))
+
+
+class PlaywrightFetcherBehaviorTests(unittest.TestCase):
+    def test_headed_mode_falls_back_to_headless_when_no_display_on_linux(self):
+        fake_timeout_error = type("FakeTimeoutError", (Exception,), {})
+        fake_sync_playwright = mock.Mock()
+        playwright_instance = mock.Mock()
+        browser_instance = mock.Mock()
+        context_instance = mock.Mock()
+
+        fake_sync_playwright.start.return_value = playwright_instance
+        playwright_instance.chromium.launch.return_value = browser_instance
+        browser_instance.new_context.return_value = context_instance
+
+        fake_sync_api = types.SimpleNamespace(
+            TimeoutError=fake_timeout_error,
+            sync_playwright=mock.Mock(return_value=fake_sync_playwright),
+        )
+
+        with mock.patch.dict(sys.modules, {"playwright.sync_api": fake_sync_api}):
+            with mock.patch.object(erp_scraper.sys, "platform", "linux"), mock.patch.dict(
+                erp_scraper.os.environ,
+                {},
+                clear=True,
+            ):
+                fetcher = erp_scraper.PlaywrightFetcher(headed=True)
+                fetcher._ensure_started()
+
+                playwright_instance.chromium.launch.assert_called_once_with(headless=True)
+                fetcher.close()
+
+    def test_startup_failure_stops_playwright_before_retry(self):
+        fake_timeout_error = type("FakeTimeoutError", (Exception,), {})
+        fake_sync_playwright = mock.Mock()
+        playwright_instance = mock.Mock()
+
+        fake_sync_playwright.start.return_value = playwright_instance
+        playwright_instance.chromium.launch.side_effect = RuntimeError("launch failed")
+
+        fake_sync_api = types.SimpleNamespace(
+            TimeoutError=fake_timeout_error,
+            sync_playwright=mock.Mock(return_value=fake_sync_playwright),
+        )
+
+        with mock.patch.dict(sys.modules, {"playwright.sync_api": fake_sync_api}):
+            fetcher = erp_scraper.PlaywrightFetcher(headed=False)
+
+            with self.assertRaises(RuntimeError):
+                fetcher._ensure_started()
+
+        playwright_instance.stop.assert_called_once()
+        self.assertIsNone(fetcher._playwright)
+        self.assertIsNone(fetcher._browser)
+        self.assertIsNone(fetcher._context)
 
 
 class PathAndParserTests(unittest.TestCase):
