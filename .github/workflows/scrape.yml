@@ -24,7 +24,7 @@ jobs:
 
       - name: Run scraper in batch mode
         run: |
-          python erp_scraper.py --config data/queries/search_terms.json --results-dir data/results --engine playwright
+          python erp_scraper.py --config data/queries/search_terms.json --results-dir data/results --engine playwright --headed
 
       - name: Check result changes
         id: changes
