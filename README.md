@@ -5,6 +5,7 @@ Search-result scraper for remote job search terms, with batch execution from JSO
 ## Project structure
 
 - `erp_scraper.py`: main scraper script.
+- `job_content_enricher.py`: second-stage routine that visits each saved URL and enriches rows with job details from HTML.
 - `data/queries/search_terms.json`: search-term configuration.
 - `data/results/*.json`: one JSON output file per search term.
 - `.github/workflows/scrape.yml`: daily run plus automatic PR creation when results change.
@@ -49,12 +50,22 @@ Each result file in `data/results/` is a JSON array:
     "query": "site:linkedin.com/jobs \"front-end\" \"react\" \"remote\"",
     "query_index": 2,
     "page": 4,
-    "page_position": 3
+    "page_position": 3,
+    "job_description": "Own the frontend architecture for the hiring platform...",
+    "job_requirements": "React and TypeScript experience\\nExperience with testing libraries",
+    "job_content_source": "jsonld,html_heading_requirements",
+    "job_fetch_status": "ok",
+    "job_fetch_error": "",
+    "job_fetch_http_status": 200,
+    "job_fetch_url": "https://company.jobs/role/123",
+    "job_fetched_at_utc": "2026-04-26T17:23:11Z"
   }
 ]
 ```
 
 `position` is global within the output file.
+
+The `job_*` fields are populated when enrichment runs (`job_content_enricher.py` or `--extract-job-details` in `erp_scraper.py`).
 
 ## Manual run (local)
 
@@ -63,6 +74,14 @@ Run the scraper manually in batch mode:
 ```bash
 python3 erp_scraper.py --config data/queries/search_terms.json --results-dir data/results
 ```
+
+To run the second stage in a separate routine (without SERP credits), after the scraper:
+
+```bash
+python3 job_content_enricher.py --config data/queries/search_terms.json --results-dir data/results
+```
+
+By default, enrichment runs in concurrent batches of `20` URLs at a time.
 
 Install dependencies once:
 
@@ -106,6 +125,17 @@ Optional flags:
 - `--timeout` (default: `20`)
 - `--engine` (`http`, `playwright`, or `serper`, default: `http`)
 - `--headed` (opens visible Chromium window; only applies with `--engine playwright`)
+- `--extract-job-details` (visits each result URL and extracts job description/requirements from HTML)
+- `--job-max-chars` (default: `4000`, max chars per extracted text field)
+
+`job_content_enricher.py` supports:
+
+- `--config` (default: `data/queries/search_terms.json`)
+- `--results-dir` (default: `data/results`)
+- `--file` (enrich a single output JSON file directly)
+- `--batch-size` (default: `20`, concurrent URLs per batch)
+- `--min-delay` / `--max-delay` / `--retries` / `--timeout`
+- `--job-max-chars` (default: `4000`)
 
 ### Serper API mode
 
@@ -165,7 +195,7 @@ Workflow: `.github/workflows/scrape.yml`
 
 - Runs daily at **06:00 UTC** (`0 6 * * *`).
 - Also supports manual trigger via `workflow_dispatch`.
-- Runs the scraper in batch mode using `--engine serper`.
+- Runs in two routines: `erp_scraper.py --engine serper` (collect links/snippets), then `job_content_enricher.py` (visit each URL and extract job details).
 - Creates an automatic PR only when `data/results/*.json` changes.
 - Uses a unique branch per run (`auto/scrape-<timestamp>`).
 - Requires repository secret `SERPER_API_KEY`.

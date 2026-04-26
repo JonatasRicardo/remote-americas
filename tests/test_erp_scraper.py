@@ -375,6 +375,111 @@ class SerperEngineTests(unittest.TestCase):
         self.assertEqual({}, rows[2])
 
 
+class JobContentExtractionTests(unittest.TestCase):
+    def test_extract_description_and_requirements_prefers_jsonld(self):
+        html = """
+        <html>
+          <head>
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "JobPosting",
+                "description": "<p>Build modern frontend apps with React.</p>",
+                "qualifications": [
+                  "5+ years of frontend experience",
+                  "Strong JavaScript and TypeScript skills"
+                ]
+              }
+            </script>
+          </head>
+        </html>
+        """
+
+        description, requirements, source = erp_scraper.extract_description_and_requirements_from_html(
+            html=html,
+            max_chars=4000,
+        )
+
+        self.assertIn("Build modern frontend apps with React.", description)
+        self.assertIn("5+ years of frontend experience", requirements)
+        self.assertIn("jsonld", source)
+
+    def test_extract_description_and_requirements_uses_heading_fallback(self):
+        html = """
+        <html>
+          <body>
+            <h2>Job Description</h2>
+            <p>Own the frontend architecture for the hiring platform.</p>
+            <h2>Requirements</h2>
+            <ul>
+              <li>React and TypeScript experience</li>
+              <li>Experience with testing libraries</li>
+            </ul>
+          </body>
+        </html>
+        """
+
+        description, requirements, source = erp_scraper.extract_description_and_requirements_from_html(
+            html=html,
+            max_chars=4000,
+        )
+
+        self.assertIn("Own the frontend architecture", description)
+        self.assertIn("React and TypeScript experience", requirements)
+        self.assertIn("html_heading_description", source)
+        self.assertIn("html_heading_requirements", source)
+
+    def test_enrich_rows_with_job_content_uses_cache_for_duplicate_urls(self):
+        cfg = erp_scraper.Config(min_delay=0, max_delay=0, max_retries=1, timeout=1)
+        rows = [
+            {"url": "https://example.com/jobs/1", "title": "A"},
+            {"url": "https://example.com/jobs/1", "title": "B"},
+        ]
+
+        html = """
+        <html>
+          <body>
+            <h2>Job Description</h2>
+            <p>Remote role for frontend engineering.</p>
+            <h2>Requirements</h2>
+            <p>React, TypeScript and communication skills.</p>
+          </body>
+        </html>
+        """
+
+        with mock.patch(
+            "erp_scraper.fetch_url_html",
+            return_value=(html, 200, "https://example.com/jobs/1"),
+        ) as fetch_mock, mock.patch(
+            "erp_scraper.sleep_between_requests",
+            return_value=None,
+        ):
+            enriched_rows, errors = erp_scraper.enrich_rows_with_job_content(rows=rows, cfg=cfg, max_chars=4000)
+
+        self.assertEqual([], errors)
+        self.assertEqual(1, fetch_mock.call_count)
+        self.assertEqual("ok", enriched_rows[0]["job_fetch_status"])
+        self.assertEqual(enriched_rows[0]["job_description"], enriched_rows[1]["job_description"])
+        self.assertEqual(enriched_rows[0]["job_requirements"], enriched_rows[1]["job_requirements"])
+
+    def test_enrich_rows_with_job_content_tracks_errors(self):
+        cfg = erp_scraper.Config(min_delay=0, max_delay=0, max_retries=1, timeout=1)
+        rows = [{"url": "https://example.com/jobs/404", "title": "A"}]
+
+        with mock.patch(
+            "erp_scraper.fetch_url_html",
+            side_effect=ValueError("bad content type"),
+        ), mock.patch(
+            "erp_scraper.sleep_between_requests",
+            return_value=None,
+        ):
+            enriched_rows, errors = erp_scraper.enrich_rows_with_job_content(rows=rows, cfg=cfg, max_chars=4000)
+
+        self.assertEqual(1, len(errors))
+        self.assertEqual("error", enriched_rows[0]["job_fetch_status"])
+        self.assertIn("ValueError: bad content type", enriched_rows[0]["job_fetch_error"])
+
+
 class DotenvTests(unittest.TestCase):
     def test_load_dotenv_sets_missing_values_without_overriding_existing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

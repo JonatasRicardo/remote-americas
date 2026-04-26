@@ -39,6 +39,10 @@ jobs:
           fi
           python erp_scraper.py --config data/queries/search_terms.json --results-dir data/results --engine serper
 
+      - name: Enrich result files with job details
+        run: |
+          python job_content_enricher.py --config data/queries/search_terms.json --results-dir data/results --batch-size 20
+
       - name: Check result changes
         id: changes
         shell: bash

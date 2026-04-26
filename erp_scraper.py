@@ -11,6 +11,7 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -46,10 +47,35 @@ DEFAULT_RESULTS_DIR = Path("data/results")
 DEFAULT_DOTENV_PATH = Path(".env")
 DEFAULT_PAGES = 10
 DEFAULT_RESULTS_PER_PAGE = 30
+DEFAULT_JOB_TEXT_MAX_CHARS = 4000
 OUTPUT_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SERPER_API_ENV = "SERPER_API_KEY"
 SERPER_API_HOST = "google.serper.dev"
 SERPER_SEARCH_PATH = "/search"
+JSON_LD_SCRIPT_RE = re.compile(
+    r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.I | re.S,
+)
+REQUIREMENTS_HEADING_KEYWORDS = (
+    "requirements",
+    "qualification",
+    "what you'll need",
+    "what you will need",
+    "must have",
+    "minimum qualifications",
+    "basic qualifications",
+    "required skills",
+    "required experience",
+)
+DESCRIPTION_HEADING_KEYWORDS = (
+    "job description",
+    "about the role",
+    "about this role",
+    "role overview",
+    "position overview",
+    "what you'll do",
+    "responsibilities",
+)
 
 
 class CaptchaDetected(Exception):
@@ -350,6 +376,7 @@ def fetch_serper_results(
         {
             "q": query,
             "page": page,
+            "num": results_per_page,
         }
     ]
     batch_response = fetch_serper_batch_payloads(batch_payload=batch_payload, cfg=cfg, api_key=api_key)
@@ -461,6 +488,370 @@ def parse_serper_results(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
 
     return results
+
+
+def normalize_space(value: str) -> str:
+    return " ".join(value.split()).strip()
+
+
+def is_jobposting_type(raw_type: Any) -> bool:
+    if isinstance(raw_type, str):
+        return raw_type.lower() == "jobposting"
+    if isinstance(raw_type, list):
+        return any(isinstance(item, str) and item.lower() == "jobposting" for item in raw_type)
+    return False
+
+
+def iter_json_objects(value: Any) -> Iterator[Dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for nested in value.values():
+            yield from iter_json_objects(nested)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            yield from iter_json_objects(item)
+
+
+def parse_json_ld_script(raw_script: str) -> Optional[Any]:
+    payload = raw_script.strip()
+    if not payload:
+        return None
+
+    if payload.startswith("<!--") and payload.endswith("-->"):
+        payload = payload[4:-3].strip()
+    if payload.startswith("<![CDATA[") and payload.endswith("]]>"):
+        payload = payload[9:-3].strip()
+
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+
+
+def find_jobposting_json_ld(html: str) -> Optional[Dict[str, Any]]:
+    for match in JSON_LD_SCRIPT_RE.finditer(html):
+        data = parse_json_ld_script(match.group(1))
+        if data is None:
+            continue
+
+        for candidate in iter_json_objects(data):
+            if is_jobposting_type(candidate.get("@type")):
+                return candidate
+
+    return None
+
+
+def truncate_text(value: str, max_chars: int) -> str:
+    if max_chars < 1:
+        return ""
+    if len(value) <= max_chars:
+        return value
+
+    truncated = value[: max_chars - 3].rstrip()
+    return f"{truncated}..."
+
+
+def html_to_visible_lines(html: str) -> List[str]:
+    without_hidden_blocks = re.sub(
+        r"(?is)<(script|style|noscript|svg|iframe)[^>]*>.*?</\1>",
+        " ",
+        html,
+    )
+    with_breaks = re.sub(r"(?i)<br\s*/?>", "\n", without_hidden_blocks)
+    with_breaks = re.sub(
+        r"(?i)</(p|div|li|section|article|h1|h2|h3|h4|h5|h6|ul|ol|tr|td|th|blockquote)>",
+        "\n",
+        with_breaks,
+    )
+
+    without_tags = re.sub(r"<[^>]+>", " ", with_breaks)
+    text = unescape(without_tags)
+
+    lines: List[str] = []
+    for raw_line in text.splitlines():
+        line = normalize_space(raw_line)
+        if not line:
+            continue
+        if len(line) <= 1:
+            continue
+        lines.append(line)
+
+    deduped_lines: List[str] = []
+    previous = ""
+    for line in lines:
+        if line == previous:
+            continue
+        deduped_lines.append(line)
+        previous = line
+
+    return deduped_lines
+
+
+def looks_like_heading(line: str) -> bool:
+    normalized = line.strip()
+    if not normalized:
+        return False
+    if len(normalized) > 120:
+        return False
+
+    if normalized.endswith(":"):
+        return True
+
+    lowered = normalized.lower()
+    return any(keyword in lowered for keyword in DESCRIPTION_HEADING_KEYWORDS + REQUIREMENTS_HEADING_KEYWORDS)
+
+
+def collect_lines_after_heading(lines: List[str], start_index: int, max_lines: int = 14) -> str:
+    collected: List[str] = []
+    for idx in range(start_index + 1, min(len(lines), start_index + 1 + max_lines)):
+        line = lines[idx]
+        if looks_like_heading(line) and collected:
+            break
+        if len(line) < 3:
+            continue
+        collected.append(line)
+
+    return "\n".join(collected).strip()
+
+
+def extract_section_by_heading(lines: List[str], heading_keywords: Tuple[str, ...]) -> str:
+    for index, line in enumerate(lines):
+        lowered = line.lower()
+        if any(keyword in lowered for keyword in heading_keywords):
+            section = collect_lines_after_heading(lines=lines, start_index=index)
+            if section:
+                return section
+    return ""
+
+
+def extract_meta_description(html: str) -> str:
+    meta_tag_pattern = re.compile(r"<meta[^>]+>", re.I)
+    for tag in meta_tag_pattern.findall(html):
+        lower_tag = tag.lower()
+        if (
+            'name="description"' not in lower_tag
+            and "name='description'" not in lower_tag
+            and 'property="og:description"' not in lower_tag
+            and "property='og:description'" not in lower_tag
+            and 'name="twitter:description"' not in lower_tag
+            and "name='twitter:description'" not in lower_tag
+        ):
+            continue
+
+        match = re.search(r'content=(?:"([^"]*)"|\'([^\']*)\')', tag, re.I)
+        if not match:
+            continue
+        content = match.group(1) or match.group(2) or ""
+        content = normalize_space(unescape(content))
+        if content:
+            return content
+
+    return ""
+
+
+def collect_text_from_jobposting_field(raw: Any) -> str:
+    if isinstance(raw, str):
+        return clean_html_text(raw)
+    if isinstance(raw, list):
+        items = [collect_text_from_jobposting_field(item) for item in raw]
+        merged = "\n".join(item for item in items if item)
+        return merged.strip()
+    if isinstance(raw, dict):
+        if "name" in raw:
+            name_text = collect_text_from_jobposting_field(raw.get("name"))
+            if name_text:
+                return name_text
+        if "@value" in raw:
+            value_text = collect_text_from_jobposting_field(raw.get("@value"))
+            if value_text:
+                return value_text
+    return ""
+
+
+def extract_description_and_requirements_from_html(html: str, max_chars: int) -> Tuple[str, str, str]:
+    source_parts: List[str] = []
+    description = ""
+    requirements = ""
+
+    jobposting = find_jobposting_json_ld(html)
+    if jobposting:
+        description = collect_text_from_jobposting_field(jobposting.get("description"))
+        requirements = collect_text_from_jobposting_field(jobposting.get("qualifications"))
+        if not requirements:
+            requirement_chunks = [
+                collect_text_from_jobposting_field(jobposting.get("experienceRequirements")),
+                collect_text_from_jobposting_field(jobposting.get("educationRequirements")),
+                collect_text_from_jobposting_field(jobposting.get("skills")),
+            ]
+            requirements = "\n".join(chunk for chunk in requirement_chunks if chunk).strip()
+
+        source_parts.append("jsonld")
+
+    lines = html_to_visible_lines(html)
+
+    if not description:
+        description = extract_section_by_heading(lines, DESCRIPTION_HEADING_KEYWORDS)
+        if description:
+            source_parts.append("html_heading_description")
+
+    if not requirements:
+        requirements = extract_section_by_heading(lines, REQUIREMENTS_HEADING_KEYWORDS)
+        if requirements:
+            source_parts.append("html_heading_requirements")
+
+    if not description:
+        description = extract_meta_description(html)
+        if description:
+            source_parts.append("meta_description")
+
+    if not description and lines:
+        fallback_lines = [line for line in lines if len(line) >= 60][:5]
+        description = " ".join(fallback_lines).strip()
+        if description:
+            source_parts.append("text_fallback")
+
+    if not requirements and lines:
+        requirement_clues = ("required", "requirement", "qualification", "experience with", "must have", "proficient")
+        requirement_lines = [line for line in lines if any(clue in line.lower() for clue in requirement_clues)]
+        requirements = "\n".join(requirement_lines[:10]).strip()
+        if requirements:
+            source_parts.append("text_fallback")
+
+    description = truncate_text(description, max_chars=max_chars)
+    requirements = truncate_text(requirements, max_chars=max_chars)
+
+    source = "none"
+    if source_parts:
+        source = ",".join(dict.fromkeys(source_parts))
+
+    return description, requirements, source
+
+
+def fetch_url_html(url: str, cfg: Config) -> Tuple[str, Optional[int], str]:
+    for attempt in range(cfg.max_retries):
+        headers = {
+            "User-Agent": random.choice(UA_LIST),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        req = Request(url, headers=headers)
+
+        try:
+            with urlopen(req, timeout=cfg.timeout) as resp:
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if "html" not in content_type and "xml" not in content_type:
+                    raise ValueError(f"Unsupported content type: {content_type or 'unknown'}")
+
+                raw_body = resp.read()
+                charset = resp.headers.get_content_charset() or "utf-8"
+                html = raw_body.decode(charset, errors="ignore")
+
+                if looks_like_captcha(html):
+                    raise CaptchaDetected("CAPTCHA detected while visiting result URL.")
+
+                status = getattr(resp, "status", None)
+                final_url = resp.geturl()
+                return html, status, final_url
+
+        except HTTPError as exc:
+            if exc.code in (429, 503) and attempt < cfg.max_retries - 1:
+                wait = (cfg.backoff_base ** attempt) + random.uniform(0.3, 1.2)
+                time.sleep(wait)
+                continue
+            raise
+        except (URLError, ValueError, OSError):
+            if attempt < cfg.max_retries - 1:
+                wait = (cfg.backoff_base ** attempt) + random.uniform(0.3, 1.2)
+                time.sleep(wait)
+                continue
+            raise
+
+    raise RuntimeError("Failed to fetch URL HTML after retries.")
+
+
+def build_job_content_error_details(exc: Exception) -> Dict[str, Any]:
+    status = None
+    if isinstance(exc, HTTPError):
+        status = exc.code
+
+    return {
+        "job_description": "",
+        "job_requirements": "",
+        "job_content_source": "none",
+        "job_fetch_status": "error",
+        "job_fetch_error": f"{type(exc).__name__}: {exc}",
+        "job_fetch_http_status": status,
+        "job_fetch_url": "",
+    }
+
+
+def enrich_rows_with_job_content(
+    rows: List[Dict[str, Any]],
+    cfg: Config,
+    max_chars: int,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    errors: List[str] = []
+    per_url_cache: Dict[str, Dict[str, Any]] = {}
+    unique_urls = [str(row.get("url", "")).strip() for row in rows if str(row.get("url", "")).strip()]
+    total_unique_urls = len(set(unique_urls))
+    processed_unique_urls = 0
+
+    for row_index, row in enumerate(rows, start=1):
+        url = str(row.get("url", "")).strip()
+        if not url:
+            row.update(
+                {
+                    "job_description": "",
+                    "job_requirements": "",
+                    "job_content_source": "none",
+                    "job_fetch_status": "skipped",
+                    "job_fetch_error": "missing url",
+                    "job_fetch_http_status": None,
+                    "job_fetch_url": "",
+                }
+            )
+            continue
+
+        cached = per_url_cache.get(url)
+        if cached is not None:
+            row.update(dict(cached))
+            continue
+
+        processed_unique_urls += 1
+        print(f"[INFO] Enriching URL {processed_unique_urls}/{total_unique_urls}: {url}")
+
+        try:
+            html, http_status, final_url = fetch_url_html(url=url, cfg=cfg)
+            description, requirements, source = extract_description_and_requirements_from_html(
+                html=html,
+                max_chars=max_chars,
+            )
+            fetched_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+            details = {
+                "job_description": description,
+                "job_requirements": requirements,
+                "job_content_source": source,
+                "job_fetch_status": "ok" if description or requirements else "empty",
+                "job_fetch_error": "",
+                "job_fetch_http_status": http_status,
+                "job_fetch_url": final_url,
+                "job_fetched_at_utc": fetched_at,
+            }
+        except Exception as exc:  # noqa: BLE001
+            details = build_job_content_error_details(exc)
+            msg = f"row={row_index}, url={url}: {type(exc).__name__}: {exc}"
+            errors.append(msg)
+            print(f"[WARN] URL enrichment failed: {msg}")
+
+        per_url_cache[url] = details
+        row.update(dict(details))
+
+        should_sleep = processed_unique_urls < total_unique_urls
+        sleep_between_requests(cfg, should_sleep=should_sleep)
+
+    return rows, errors
 
 
 def save_json(rows: List[Dict[str, Any]], path: Path) -> None:
@@ -608,6 +999,7 @@ def collect_results_for_queries_serper(
             {
                 "q": query,
                 "page": page,
+                "num": results_per_page,
             }
             for page in range(1, pages + 1)
         ]
@@ -653,6 +1045,8 @@ def run_single_query(
     results_per_page: int,
     engine: str = "http",
     headed: bool = False,
+    extract_job_details: bool = False,
+    job_text_max_chars: int = DEFAULT_JOB_TEXT_MAX_CHARS,
 ) -> int:
     if engine == "serper":
         api_key = resolve_serper_api_key()
@@ -672,6 +1066,11 @@ def run_single_query(
                 results_per_page=results_per_page,
                 fetch_html=fetch_html,
             )
+
+    if extract_job_details:
+        rows, enrich_errors = enrich_rows_with_job_content(rows=rows, cfg=cfg, max_chars=job_text_max_chars)
+        errors.extend(enrich_errors)
+
     save_json(rows, output_path)
 
     print(f"[OK] Results: {len(rows)}")
@@ -691,6 +1090,8 @@ def run_batch(
     results_per_page: int,
     engine: str = "http",
     headed: bool = False,
+    extract_job_details: bool = False,
+    job_text_max_chars: int = DEFAULT_JOB_TEXT_MAX_CHARS,
 ) -> int:
     terms = load_search_terms(config_path)
     print(f"[INFO] Loaded search terms: {len(terms)}")
@@ -715,15 +1116,19 @@ def run_batch(
                     results_per_page=results_per_page,
                     api_key=api_key,
                 )
+                all_errors = list(page_errors)
+                if extract_job_details:
+                    rows, enrich_errors = enrich_rows_with_job_content(rows=rows, cfg=cfg, max_chars=job_text_max_chars)
+                    all_errors.extend(enrich_errors)
                 save_json(rows, output_path)
 
-                page_error_count += len(page_errors)
+                page_error_count += len(all_errors)
                 success_count += 1
 
                 print(f"[OK] Saved {len(rows)} rows to {output_path}")
-                if page_errors:
-                    print(f"[WARN] {len(page_errors)} page(s) failed while processing '{term.title}'.")
-                    for page_error in page_errors:
+                if all_errors:
+                    print(f"[WARN] {len(all_errors)} request(s) failed while processing '{term.title}'.")
+                    for page_error in all_errors:
                         print(f" - {page_error}")
 
             except Exception as exc:  # noqa: BLE001
@@ -746,15 +1151,23 @@ def run_batch(
                         results_per_page=results_per_page,
                         fetch_html=fetch_html,
                     )
+                    all_errors = list(page_errors)
+                    if extract_job_details:
+                        rows, enrich_errors = enrich_rows_with_job_content(
+                            rows=rows,
+                            cfg=cfg,
+                            max_chars=job_text_max_chars,
+                        )
+                        all_errors.extend(enrich_errors)
                     save_json(rows, output_path)
 
-                    page_error_count += len(page_errors)
+                    page_error_count += len(all_errors)
                     success_count += 1
 
                     print(f"[OK] Saved {len(rows)} rows to {output_path}")
-                    if page_errors:
-                        print(f"[WARN] {len(page_errors)} page(s) failed while processing '{term.title}'.")
-                        for page_error in page_errors:
+                    if all_errors:
+                        print(f"[WARN] {len(all_errors)} request(s) failed while processing '{term.title}'.")
+                        for page_error in all_errors:
                             print(f" - {page_error}")
 
                 except Exception as exc:  # noqa: BLE001
@@ -811,6 +1224,17 @@ def main() -> int:
         action="store_true",
         help="Open visible Chromium window (only used with --engine playwright).",
     )
+    parser.add_argument(
+        "--extract-job-details",
+        action="store_true",
+        help="Visit each result URL and extract job description/requirements from the page HTML.",
+    )
+    parser.add_argument(
+        "--job-max-chars",
+        type=int,
+        default=DEFAULT_JOB_TEXT_MAX_CHARS,
+        help=f"Maximum characters per extracted job text field (default: {DEFAULT_JOB_TEXT_MAX_CHARS}).",
+    )
 
     args = parser.parse_args()
 
@@ -822,6 +1246,8 @@ def main() -> int:
 
     if args.results_per_page < 1:
         parser.error("--results-per-page must be >= 1.")
+    if args.job_max_chars < 1:
+        parser.error("--job-max-chars must be >= 1.")
 
     if args.headed and args.engine != "playwright":
         print("[WARN] --headed has no effect unless --engine playwright.")
@@ -847,6 +1273,8 @@ def main() -> int:
                 results_per_page=args.results_per_page,
                 engine=args.engine,
                 headed=args.headed,
+                extract_job_details=args.extract_job_details,
+                job_text_max_chars=args.job_max_chars,
             )
             return 0
 
@@ -860,6 +1288,8 @@ def main() -> int:
             results_per_page=args.results_per_page,
             engine=args.engine,
             headed=args.headed,
+            extract_job_details=args.extract_job_details,
+            job_text_max_chars=args.job_max_chars,
         )
     except CaptchaDetected as exc:
         print(f"[STOP] {exc}")
