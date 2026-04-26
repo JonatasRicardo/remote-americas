@@ -1,10 +1,39 @@
 [
   {
-    "title": "Frontend React Remote",
+    "title": "Frontend",
     "queries": [
-      "site:job-boards.greenhouse.io \"front-end\" \"react\" \"remote\" -\"green card\"",
-      "site:jobs.ashbyhq.com \"front-end\" \"react\" \"remote\" -\"green card\""
+      "site:jobs.ashbyhq.co \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:motionrecruitment.com \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:jobs.smartrecruiters.com/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:jobs.lever.co/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.pinpointhq.com/postings/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:job-boards.greenhouse.io \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:apply.workable.com/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.dejobs.org/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:app.dover.com \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.breezy.hr/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.notion.site/ \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:www.workatastartup.com/jobs \"frontend\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\""
     ],
-    "output": "frontend-react-remote"
+    "output": "frontend"
+  },
+  {
+    "title": "Full-Stack React",
+    "queries": [
+      "site:jobs.ashbyhq.co \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:motionrecruitment.com \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:jobs.smartrecruiters.com/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:jobs.lever.co/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.pinpointhq.com/postings/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:job-boards.greenhouse.io \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:apply.workable.com/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.dejobs.org/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:app.dover.com \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.breezy.hr/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:*.notion.site/ \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\"",
+      "site:www.workatastartup.com/jobs \"full-stack\" \"react\" \"remote\" -\"authorized\" -\"legal authorization\" -\"US citizens\" -\"citizens\" -\"green card\" -\"US-based\""
+    ],
+    "output": "fullstack-react"
   }
 ]
+
