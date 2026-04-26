@@ -2,8 +2,8 @@
   {
     "title": "Frontend React Remote",
     "queries": [
-      "site:job-boards.greenhouse.io 'front-end' 'react' 'remote' -'green card'",
-      "site:jobs.ashbyhq.com 'front-end' 'react' 'remote' -'green card'"
+      "site:job-boards.greenhouse.io \"front-end\" \"react\" \"remote\" -\"green card\"",
+      "site:jobs.ashbyhq.com \"front-end\" \"react\" \"remote\" -\"green card\""
     ],
     "output": "frontend-react-remote"
   }

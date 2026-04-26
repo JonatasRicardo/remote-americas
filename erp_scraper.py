@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import http.client
 import json
 import os
 import random
@@ -42,13 +43,50 @@ UA_LIST = [
 
 DEFAULT_CONFIG_PATH = Path("data/queries/search_terms.json")
 DEFAULT_RESULTS_DIR = Path("data/results")
+DEFAULT_DOTENV_PATH = Path(".env")
 DEFAULT_PAGES = 10
 DEFAULT_RESULTS_PER_PAGE = 30
 OUTPUT_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+SERPER_API_ENV = "SERPER_API_KEY"
+SERPER_API_HOST = "google.serper.dev"
+SERPER_SEARCH_PATH = "/search"
 
 
 class CaptchaDetected(Exception):
     pass
+
+
+def load_dotenv(path: Path = DEFAULT_DOTENV_PATH) -> None:
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not key or key in os.environ:
+            continue
+
+        if value and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+
+        os.environ[key] = value
+
+
+def resolve_serper_api_key() -> str:
+    api_key = os.environ.get(SERPER_API_ENV, "").strip()
+    if api_key:
+        return api_key
+
+    raise ValueError(
+        "Serper engine selected, but SERPER_API_KEY is missing. "
+        "Set it in your shell or in a local .env file."
+    )
 
 
 def running_without_display_server() -> bool:
@@ -236,6 +274,89 @@ def fetch_ddg_html(query: str, cfg: Config, page: int, results_per_page: int) ->
             raise
 
 
+def normalize_serper_batch_response(raw: Any, expected_items: int) -> List[Dict[str, Any]]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        maybe_results = raw.get("results")
+        if isinstance(maybe_results, list):
+            items = maybe_results
+        else:
+            items = [raw]
+    else:
+        raise ValueError("Serper API returned unexpected batch response format.")
+
+    normalized: List[Dict[str, Any]] = [item if isinstance(item, dict) else {} for item in items]
+
+    if len(normalized) < expected_items:
+        normalized.extend({} for _ in range(expected_items - len(normalized)))
+    elif len(normalized) > expected_items:
+        normalized = normalized[:expected_items]
+
+    return normalized
+
+
+def fetch_serper_batch_payloads(
+    batch_payload: List[Dict[str, Any]],
+    cfg: Config,
+    api_key: str,
+) -> List[Dict[str, Any]]:
+    payload = json.dumps(batch_payload)
+    headers = {
+        "X-API-KEY": api_key,
+        "Content-Type": "application/json",
+    }
+
+    for attempt in range(cfg.max_retries):
+        connection = http.client.HTTPSConnection(SERPER_API_HOST, timeout=cfg.timeout)
+        try:
+            connection.request("POST", SERPER_SEARCH_PATH, payload, headers)
+            response = connection.getresponse()
+            raw_body = response.read().decode("utf-8", errors="ignore")
+
+            if response.status >= 400:
+                if response.status in (429, 503) and attempt < cfg.max_retries - 1:
+                    wait = (cfg.backoff_base ** attempt) + random.uniform(0.3, 1.2)
+                    time.sleep(wait)
+                    continue
+                raise ValueError(f"Serper API returned HTTP {response.status}: {raw_body[:200]}")
+
+            try:
+                data = json.loads(raw_body)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Serper API returned invalid JSON response.") from exc
+
+            return normalize_serper_batch_response(data, expected_items=len(batch_payload))
+        except OSError:
+            if attempt < cfg.max_retries - 1:
+                wait = (cfg.backoff_base ** attempt) + random.uniform(0.3, 1.2)
+                time.sleep(wait)
+                continue
+            raise
+        finally:
+            connection.close()
+
+    raise RuntimeError("Failed to fetch results with Serper API after retries.")
+
+
+def fetch_serper_results(
+    query: str,
+    cfg: Config,
+    page: int,
+    results_per_page: int,
+    api_key: str,
+) -> List[Dict[str, Any]]:
+    batch_payload = [
+        {
+            "q": query,
+            "page": page,
+        }
+    ]
+    batch_response = fetch_serper_batch_payloads(batch_payload=batch_payload, cfg=cfg, api_key=api_key)
+    first_item = batch_response[0] if batch_response else {}
+    return parse_serper_results(first_item)
+
+
 def clean_html_text(value: str) -> str:
     without_tags = re.sub(r"<[^>]+>", "", value)
     normalized_ws = " ".join(unescape(without_tags).split())
@@ -306,6 +427,39 @@ def parse_ddg_results(html: str) -> List[Dict[str, Any]]:
                 "domain": extract_domain(normalized_url),
             }
         )
+    return results
+
+
+def parse_serper_results(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
+    organic = raw.get("organic", [])
+    if not isinstance(organic, list):
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for idx, item in enumerate(organic, start=1):
+        if not isinstance(item, dict):
+            continue
+
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("link", "")).strip()
+        snippet = str(item.get("snippet", "")).strip()
+
+        raw_position = item.get("position", idx)
+        try:
+            page_position = int(raw_position)
+        except (TypeError, ValueError):
+            page_position = idx
+
+        results.append(
+            {
+                "position": page_position,
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "domain": extract_domain(url),
+            }
+        )
+
     return results
 
 
@@ -438,6 +592,59 @@ def collect_results_for_queries(
     return rows, errors
 
 
+def collect_results_for_queries_serper(
+    queries: List[str],
+    cfg: Config,
+    pages: int,
+    results_per_page: int,
+    api_key: str,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    rows: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    global_position = 1
+
+    for query_index, query in enumerate(queries, start=1):
+        batch_payload = [
+            {
+                "q": query,
+                "page": page,
+            }
+            for page in range(1, pages + 1)
+        ]
+        should_sleep = query_index != len(queries)
+
+        try:
+            batch_pages = fetch_serper_batch_payloads(batch_payload=batch_payload, cfg=cfg, api_key=api_key)
+        except Exception as exc:  # noqa: BLE001
+            msg = f"query_index={query_index}, page=batch: {type(exc).__name__}: {exc}"
+            errors.append(msg)
+            print(f"[WARN] Query batch failed: {msg}")
+            sleep_between_requests(cfg, should_sleep=should_sleep)
+            continue
+
+        for page, raw_page in enumerate(batch_pages, start=1):
+            print(f"[INFO] Query {query_index}/{len(queries)} | Page {page}/{pages}: {query}")
+            page_rows = parse_serper_results(raw_page)
+
+            if not page_rows:
+                print(f"[INFO] No results on page {page} for query index {query_index}.")
+                break
+
+            for page_position, base_row in enumerate(page_rows, start=1):
+                row = dict(base_row)
+                row["position"] = global_position
+                row["query"] = query
+                row["query_index"] = query_index
+                row["page"] = page
+                row["page_position"] = page_position
+                rows.append(row)
+                global_position += 1
+
+        sleep_between_requests(cfg, should_sleep=should_sleep)
+
+    return rows, errors
+
+
 def run_single_query(
     query: str,
     output_path: Path,
@@ -447,14 +654,24 @@ def run_single_query(
     engine: str = "http",
     headed: bool = False,
 ) -> int:
-    with resolve_fetcher(engine=engine, headed=headed) as fetch_html:
-        rows, errors = collect_results_for_queries(
+    if engine == "serper":
+        api_key = resolve_serper_api_key()
+        rows, errors = collect_results_for_queries_serper(
             queries=[query],
             cfg=cfg,
             pages=pages,
             results_per_page=results_per_page,
-            fetch_html=fetch_html,
+            api_key=api_key,
         )
+    else:
+        with resolve_fetcher(engine=engine, headed=headed) as fetch_html:
+            rows, errors = collect_results_for_queries(
+                queries=[query],
+                cfg=cfg,
+                pages=pages,
+                results_per_page=results_per_page,
+                fetch_html=fetch_html,
+            )
     save_json(rows, output_path)
 
     print(f"[OK] Results: {len(rows)}")
@@ -483,19 +700,20 @@ def run_batch(
     page_error_count = 0
     failure_messages: List[str] = []
 
-    with resolve_fetcher(engine=engine, headed=headed) as fetch_html:
+    if engine == "serper":
+        api_key = resolve_serper_api_key()
         for term in terms:
             output_path = resolve_output_path(term.output, results_dir)
             print(f"\n[RUN] {term.title} -> {output_path}")
             print(f"[INFO] Queries: {len(term.queries)} | Pages per query: {pages}")
 
             try:
-                rows, page_errors = collect_results_for_queries(
+                rows, page_errors = collect_results_for_queries_serper(
                     queries=term.queries,
                     cfg=cfg,
                     pages=pages,
                     results_per_page=results_per_page,
-                    fetch_html=fetch_html,
+                    api_key=api_key,
                 )
                 save_json(rows, output_path)
 
@@ -513,6 +731,37 @@ def run_batch(
                 message = f"{term.output}: {type(exc).__name__}: {exc}"
                 failure_messages.append(message)
                 print(f"[WARN] Search term failed for '{term.title}': {type(exc).__name__}: {exc}")
+    else:
+        with resolve_fetcher(engine=engine, headed=headed) as fetch_html:
+            for term in terms:
+                output_path = resolve_output_path(term.output, results_dir)
+                print(f"\n[RUN] {term.title} -> {output_path}")
+                print(f"[INFO] Queries: {len(term.queries)} | Pages per query: {pages}")
+
+                try:
+                    rows, page_errors = collect_results_for_queries(
+                        queries=term.queries,
+                        cfg=cfg,
+                        pages=pages,
+                        results_per_page=results_per_page,
+                        fetch_html=fetch_html,
+                    )
+                    save_json(rows, output_path)
+
+                    page_error_count += len(page_errors)
+                    success_count += 1
+
+                    print(f"[OK] Saved {len(rows)} rows to {output_path}")
+                    if page_errors:
+                        print(f"[WARN] {len(page_errors)} page(s) failed while processing '{term.title}'.")
+                        for page_error in page_errors:
+                            print(f" - {page_error}")
+
+                except Exception as exc:  # noqa: BLE001
+                    failed_count += 1
+                    message = f"{term.output}: {type(exc).__name__}: {exc}"
+                    failure_messages.append(message)
+                    print(f"[WARN] Search term failed for '{term.title}': {type(exc).__name__}: {exc}")
 
     print("\n[SUMMARY]")
     print(f"[SUMMARY] Search terms succeeded: {success_count}")
@@ -527,6 +776,8 @@ def run_batch(
 
 
 def main() -> int:
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="Simple compliance-first SERP scraper.")
     parser.add_argument("--query", help="Search query for single-run mode")
     parser.add_argument("--out", default="results", help="Output prefix for single-run mode")
@@ -548,9 +799,12 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument(
         "--engine",
-        choices=("http", "playwright"),
+        choices=("http", "playwright", "serper"),
         default="http",
-        help="Fetcher engine: 'http' (default) or 'playwright' for real Chromium browser with JavaScript.",
+        help=(
+            "Fetcher engine: 'http' (default), 'playwright' for real Chromium browser with JavaScript, "
+            "or 'serper' for Google SERP API via SERPER_API_KEY."
+        ),
     )
     parser.add_argument(
         "--headed",

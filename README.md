@@ -1,6 +1,6 @@
 # remote-americas
 
-DuckDuckGo web scraper for remote job search terms, with batch execution from JSON and automated updates through GitHub Actions.
+Search-result scraper for remote job search terms, with batch execution from JSON and automated updates through GitHub Actions.
 
 ## Project structure
 
@@ -64,12 +64,17 @@ Run the scraper manually in batch mode:
 python3 erp_scraper.py --config data/queries/search_terms.json --results-dir data/results
 ```
 
-By default, the scraper uses a lightweight HTTP engine.
+Install dependencies once:
+
+```bash
+pip install -r requirements.txt
+```
+
+By default, the scraper uses a lightweight DuckDuckGo HTTP engine.
 
 If you need a real browser (Chromium) with JavaScript enabled, install Playwright once:
 
 ```bash
-pip install playwright
 python -m playwright install chromium
 ```
 
@@ -99,8 +104,25 @@ Optional flags:
 - `--max-delay` (default: `6.0`)
 - `--retries` (default: `4`)
 - `--timeout` (default: `20`)
-- `--engine` (`http` or `playwright`, default: `http`)
+- `--engine` (`http`, `playwright`, or `serper`, default: `http`)
 - `--headed` (opens visible Chromium window; only applies with `--engine playwright`)
+
+### Serper API mode
+
+Create a local `.env` file and set your key:
+
+```bash
+cp .env.example .env
+# edit .env and set SERPER_API_KEY
+```
+
+Then run:
+
+```bash
+python3 erp_scraper.py --config data/queries/search_terms.json --results-dir data/results --engine serper
+```
+
+In `serper` mode, the scraper sends page requests in batch (`payload` as a JSON list) and parses JSON responses directly.
 
 Single-query manual run is also available:
 
@@ -143,6 +165,7 @@ Workflow: `.github/workflows/scrape.yml`
 
 - Runs daily at **06:00 UTC** (`0 6 * * *`).
 - Also supports manual trigger via `workflow_dispatch`.
-- Runs the scraper in batch mode.
+- Runs the scraper in batch mode using `--engine serper`.
 - Creates an automatic PR only when `data/results/*.json` changes.
 - Uses a unique branch per run (`auto/scrape-<timestamp>`).
+- Requires repository secret `SERPER_API_KEY`.

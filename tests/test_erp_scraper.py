@@ -284,5 +284,120 @@ class LoadSearchTermsTests(unittest.TestCase):
         self.assertEqual(2, len(terms[0].queries))
 
 
+class SerperEngineTests(unittest.TestCase):
+    def test_parse_serper_results_maps_fields(self):
+        raw = {
+            "organic": [
+                {
+                    "position": 3,
+                    "title": "Apple jobs",
+                    "link": "https://www.apple.com/careers/us/",
+                    "snippet": "Open roles at Apple.",
+                }
+            ]
+        }
+
+        rows = erp_scraper.parse_serper_results(raw)
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(3, rows[0]["position"])
+        self.assertEqual("Apple jobs", rows[0]["title"])
+        self.assertEqual("https://www.apple.com/careers/us/", rows[0]["url"])
+        self.assertEqual("apple.com", rows[0]["domain"])
+        self.assertEqual("Open roles at Apple.", rows[0]["snippet"])
+
+    def test_collect_results_for_queries_serper_stops_on_empty_page(self):
+        cfg = erp_scraper.Config(min_delay=0, max_delay=0, max_retries=1, timeout=1)
+
+        fake_batches = {
+            "query-one": [
+                {"organic": [{"position": 1, "title": "A", "link": "https://example.com/a", "snippet": "sa"}]},
+                {"organic": []},
+                {"organic": [{"position": 1, "title": "IGNORED", "link": "https://example.com/ignored", "snippet": "x"}]},
+            ],
+            "query-two": [
+                {"organic": [{"position": 1, "title": "B", "link": "https://example.com/b", "snippet": "sb"}]},
+                {"organic": []},
+                {"organic": []},
+            ],
+        }
+
+        with mock.patch(
+            "erp_scraper.fetch_serper_batch_payloads",
+            side_effect=lambda batch_payload, cfg, api_key: fake_batches[batch_payload[0]["q"]],
+        ) as fetch_mock, mock.patch(
+            "erp_scraper.sleep_between_requests",
+            return_value=None,
+        ):
+            rows, errors = erp_scraper.collect_results_for_queries_serper(
+                queries=["query-one", "query-two"],
+                cfg=cfg,
+                pages=3,
+                results_per_page=10,
+                api_key="token",
+            )
+
+        self.assertEqual([], errors)
+        self.assertEqual(2, len(rows))
+        self.assertEqual(1, rows[0]["position"])
+        self.assertEqual(2, rows[1]["position"])
+        self.assertEqual("query-two", rows[1]["query"])
+
+        expected_calls = [
+            mock.call(
+                batch_payload=[
+                    {"q": "query-one", "page": 1, "num": 10},
+                    {"q": "query-one", "page": 2, "num": 10},
+                    {"q": "query-one", "page": 3, "num": 10},
+                ],
+                cfg=cfg,
+                api_key="token",
+            ),
+            mock.call(
+                batch_payload=[
+                    {"q": "query-two", "page": 1, "num": 10},
+                    {"q": "query-two", "page": 2, "num": 10},
+                    {"q": "query-two", "page": 3, "num": 10},
+                ],
+                cfg=cfg,
+                api_key="token",
+            ),
+        ]
+        self.assertEqual(expected_calls, fetch_mock.call_args_list)
+
+    def test_normalize_serper_batch_response_pads_missing_items(self):
+        raw = {"organic": [{"title": "Only one"}]}
+        rows = erp_scraper.normalize_serper_batch_response(raw, expected_items=3)
+
+        self.assertEqual(3, len(rows))
+        self.assertEqual(raw, rows[0])
+        self.assertEqual({}, rows[1])
+        self.assertEqual({}, rows[2])
+
+
+class DotenvTests(unittest.TestCase):
+    def test_load_dotenv_sets_missing_values_without_overriding_existing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "SERPER_API_KEY=from-file\nALREADY=from-file\nQUOTED='hello world'\n# COMMENTED=1\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(erp_scraper.os.environ, {"ALREADY": "from-env"}, clear=True):
+                erp_scraper.load_dotenv(env_path)
+
+                self.assertEqual("from-file", erp_scraper.os.environ["SERPER_API_KEY"])
+                self.assertEqual("from-env", erp_scraper.os.environ["ALREADY"])
+                self.assertEqual("hello world", erp_scraper.os.environ["QUOTED"])
+
+    def test_resolve_serper_api_key_raises_when_missing(self):
+        with mock.patch.dict(erp_scraper.os.environ, {}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                erp_scraper.resolve_serper_api_key()
+
+        self.assertIn("SERPER_API_KEY is missing", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
